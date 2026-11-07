@@ -30,3 +30,20 @@ test('CLI checks a downloaded PrivateBin paste without a network request', () =>
     assert.match(result.stdout, /No match among 1 candidate/);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
+
+test('all stages run in order and honor per-stage limits', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'privatebin-guesser-test-'));
+  try {
+    const wordlist = join(directory, 'words.txt');
+    writeFileSync(wordlist, 'deliberately-wrong-acceptance-password-938204\n');
+    const result = spawnSync(process.execPath, [cliFile, '--url', sampleUrl, '--paste-file', pasteFile,
+      '--wordlist', wordlist, '--mode', 'all', '--max-length', '1', '--max-candidates', '2'],
+    { encoding: 'utf8', timeout: 15_000 });
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /wordlist: tested 1 candidate/);
+    assert.match(result.stderr, /word variations: tested 2 candidate/);
+    assert.match(result.stderr, /alphanumeric: tested 2 candidate/);
+    assert.match(result.stderr, /with symbols: tested 2 candidate/);
+    assert.match(result.stdout, /No match among 7 candidate/);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});

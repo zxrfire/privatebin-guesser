@@ -3,15 +3,31 @@ import { createReadStream } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import { parsePasteUrl, fetchPaste, preparePaste, tryPassword } from '../src/privatebin.js';
+import { ALNUM, PRINTABLE, combinations, charsetSize, maskCandidates, maskSize, parseMask, wordVariants } from '../src/candidates.js';
 
 function usage() {
-  return `Usage: privatebin-guesser --url <PrivateBin URL> --wordlist <file> [--save <file>]
-       privatebin-guesser --url <PrivateBin URL> --paste-file <file> --wordlist <file>
+  return `Usage: privatebin-guesser --url <PrivateBin URL> --wordlist <file> [--mode wordlist|rules|all]
+       privatebin-guesser --url <PrivateBin URL> --mode alnum|special [--max-length 6]
+       privatebin-guesser --url <PrivateBin URL> --mask '?u?l?l?l?d?d'
 
-Fetches a PrivateBin v2 paste once, then tests wordlist passwords offline.
---save stores the encrypted JSON for later offline runs. Treat it and the URL as sensitive.
-The password and decrypted paste are never sent to the server.
+Options:
+  --wordlist FILE          UTF-8 file with one candidate per line
+  --mode MODE              wordlist (default), rules, alnum, special, all, or mask
+  --mask PATTERN           Mask tokens: ?l lower, ?u upper, ?d digit, ?s symbol, ?a printable, ?? literal ?
+  --max-length N           Maximum length for alnum/special modes (default 6, max 12)
+  --max-candidates N       Per generated stage limit (default 10000)
+  --paste-file FILE        Use saved encrypted paste instead of fetching
+  --save FILE              Save encrypted response; refuses to overwrite
+
+All mode runs wordlist, word variations, alphanumeric, then passwords with symbols.
+The paste is fetched once; all guesses are tested offline.
 `;
+}
+
+function positiveInteger(value, option, maximum) {
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < 1 || number > maximum) throw new Error(`${option} must be an integer from 1 to ${maximum}.`);
+  return number;
 }
 
 function argumentsFrom(argv) {
@@ -19,12 +35,31 @@ function argumentsFrom(argv) {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--help' || arg === '-h') return { help: true };
-    if (!['--url', '--wordlist', '--paste-file', '--save'].includes(arg) || !argv[i + 1]) throw new Error(`Invalid argument: ${arg}`);
+    if (!['--url', '--wordlist', '--mode', '--mask', '--max-length', '--max-candidates', '--paste-file', '--save'].includes(arg) || !argv[i + 1]) throw new Error(`Invalid argument: ${arg}`);
+    if (args[arg.slice(2)] !== undefined) throw new Error(`Repeated option: ${arg}`);
     args[arg.slice(2)] = argv[++i];
   }
-  if (!args.url || !args.wordlist) throw new Error('Both --url and --wordlist are required.');
+  if (!args.url) throw new Error('--url is required.');
+  args.mode ??= args.mask ? 'mask' : 'wordlist';
+  if (!['wordlist', 'rules', 'alnum', 'special', 'all', 'mask'].includes(args.mode)) throw new Error('Invalid --mode.');
+  if (['wordlist', 'rules', 'all'].includes(args.mode) && !args.wordlist) throw new Error(`--wordlist is required for ${args.mode} mode.`);
+  if (args.mode === 'mask' && !args.mask) throw new Error('--mask is required for mask mode.');
+  if (args.mask && args.mode !== 'mask') throw new Error('--mask requires mask mode.');
   if (args.save && args['paste-file']) throw new Error('--save cannot be used with --paste-file.');
+  args.maxLength = positiveInteger(args['max-length'] ?? '6', '--max-length', 12);
+  args.maxCandidates = positiveInteger(args['max-candidates'] ?? '10000', '--max-candidates', 1_000_000_000);
   return args;
+}
+
+async function* words(file) {
+  const lines = createInterface({ input: createReadStream(file), crlfDelay: Infinity });
+  try { for await (const word of lines) yield word; } finally { lines.close(); }
+}
+
+async function* variants(file) {
+  for await (const word of words(file)) {
+    for (const candidate of wordVariants(word)) if (candidate !== word) yield candidate;
+  }
 }
 
 async function main() {
@@ -37,21 +72,45 @@ async function main() {
     await writeFile(args.save, `${JSON.stringify(paste)}\n`, { flag: 'wx', mode: 0o600 });
     console.error(`Encrypted paste saved to ${args.save}`);
   }
-  let count = 0;
-  const start = performance.now();
-  const lines = createInterface({ input: createReadStream(args.wordlist), crlfDelay: Infinity });
-  try {
-    for await (const password of lines) {
+
+  let total = 0;
+  const started = performance.now();
+  async function runStage(name, candidates, limit, keyspace) {
+    console.error(`${name}: ${keyspace === undefined ? 'streaming candidates' : `${keyspace} possible candidates`}${limit === Infinity ? '' : `; trying at most ${limit}`}.`);
+    let count = 0;
+    const stageStarted = performance.now();
+    for await (const password of candidates) {
+      if (count >= limit) break;
       count++;
+      total++;
       const plaintext = tryPassword(key, prepared, password);
       if (plaintext !== null) {
         console.log(`Password found: ${password}`);
-        console.log(`Tested ${count} candidate(s) in ${((performance.now() - start) / 1000).toFixed(2)} s.`);
-        return;
+        console.log(`Stage: ${name}. Tested ${total} candidate(s) in ${((performance.now() - started) / 1000).toFixed(2)} s.`);
+        return true;
+      }
+      if (count % 1000 === 0) {
+        const seconds = (performance.now() - stageStarted) / 1000;
+        const rate = count / seconds;
+        const target = keyspace === undefined ? limit : Math.min(limit, Number(keyspace));
+        const eta = Number.isFinite(target) ? `; about ${((target - count) / rate).toFixed(0)} s to stage limit` : '';
+        console.error(`${name}: tested ${count} candidate(s); ${rate.toFixed(1)}/s${eta}.`);
       }
     }
-  } finally { lines.close(); }
-  console.log(`No match among ${count} candidate(s) in ${((performance.now() - start) / 1000).toFixed(2)} s.`);
+    const truncated = count >= limit && (keyspace === undefined || BigInt(count) < keyspace);
+    console.error(`${name}: tested ${count} candidate(s)${truncated ? ' (stage limit reached)' : ''}.`);
+    return false;
+  }
+
+  if (['wordlist', 'all'].includes(args.mode) && await runStage('wordlist', words(args.wordlist), Infinity)) return;
+  if (['rules', 'all'].includes(args.mode) && await runStage('word variations', variants(args.wordlist), args.maxCandidates)) return;
+  if (['alnum', 'all'].includes(args.mode) && await runStage('alphanumeric', combinations(ALNUM, args.maxLength), args.maxCandidates, charsetSize(ALNUM, args.maxLength))) return;
+  if (['special', 'all'].includes(args.mode) && await runStage('with symbols', combinations(PRINTABLE, args.maxLength, true), args.maxCandidates, charsetSize(PRINTABLE, args.maxLength, true))) return;
+  if (args.mode === 'mask') {
+    const positions = parseMask(args.mask);
+    if (await runStage(`mask ${args.mask}`, maskCandidates(positions), args.maxCandidates, maskSize(positions))) return;
+  }
+  console.log(`No match among ${total} candidate(s) in ${((performance.now() - started) / 1000).toFixed(2)} s.`);
   process.exitCode = 2;
 }
 
