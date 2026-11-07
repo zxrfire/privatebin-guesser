@@ -3,3 +3,4 @@ node_modules/
 !test/fixtures/*.paste.json
 *.wordlist
 *.txt
+bench/*-results.jsonl

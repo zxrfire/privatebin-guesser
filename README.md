@@ -20,7 +20,7 @@ That runs the wordlist alone. To run the full sequence, use:
 node bin/privatebin-guesser.js --url 'https://privatebin.example/?0123456789abcdef#YOUR_KEY' --wordlist 'C:\path\to\words.txt' --mode all --max-length 4 --max-candidates 1000
 ```
 
-`all` tries the wordlist, case changes and common suffixes, alphanumeric combinations, then printable ASCII combinations containing at least one symbol. `--max-length` sets the longest generated candidate. `--max-candidates` limits each generated stage, so a full keyspace may remain untested. The program shows keyspace size, progress, and approximate stage time while it runs. The wordlist stage always reads the whole file.
+`all` tries the wordlist, case changes and common suffixes, alphanumeric combinations, then printable ASCII combinations containing at least one symbol. `--max-length` sets the longest generated candidate. `--max-candidates` limits each generated stage, so a full keyspace may remain untested. The program shows keyspace size, progress, and approximate stage time while it runs. The wordlist stage always reads the whole file. Two crypto jobs run in parallel by default; use `--workers 1` for a lighter run or `--workers 4` for more throughput.
 
 You can also choose one stage with `--mode rules`, `--mode alnum`, or `--mode special`. A mask narrows the search when you know a pattern:
 
@@ -55,4 +55,4 @@ Apache License 2.0. You may use, modify, and redistribute the project under its 
 npm test
 ```
 
-The acceptance test uses encrypted paste data downloaded from the sample URL supplied by the project owner. It reads that checked-in fixture and tests one deliberately wrong candidate through the CLI without making a network request, so it still works after the original paste expires.
+The acceptance tests use encrypted paste data downloaded from two sample URLs supplied by the project owner. One confirms a wrong candidate fails; the other finds the known password `test`. Both read checked-in fixtures without making a network request, so they still work after the originals expire.

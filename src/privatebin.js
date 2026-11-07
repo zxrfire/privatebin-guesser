@@ -1,5 +1,8 @@
-import { createDecipheriv, pbkdf2Sync } from 'node:crypto';
-import { inflateSync } from 'node:zlib';
+import { createDecipheriv, pbkdf2, pbkdf2Sync } from 'node:crypto';
+import { inflateRawSync, inflateSync } from 'node:zlib';
+import { promisify } from 'node:util';
+
+const deriveAsync = promisify(pbkdf2);
 
 const ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 
@@ -76,17 +79,34 @@ export async function fetchPaste(fetchUrl) {
   return paste;
 }
 
-export function tryPassword(key, prepared, password) {
-  const phrase = Buffer.concat([key, Buffer.from(password, 'utf8')]);
-  const derived = pbkdf2Sync(phrase, prepared.salt, prepared.iterations, prepared.keyBits / 8, 'sha256');
+function decryptWithDerivedKey(prepared, derived) {
   try {
     const decipher = createDecipheriv(`aes-${prepared.keyBits}-gcm`, derived, prepared.iv, { authTagLength: prepared.tagBytes });
     decipher.setAAD(prepared.aad);
     decipher.setAuthTag(prepared.tag);
     const raw = Buffer.concat([decipher.update(prepared.ciphertext), decipher.final()]);
-    return prepared.compression === 'zlib' ? inflateSync(raw) : raw;
+    if (prepared.compression !== 'zlib') return raw;
+    // PrivateBin clients have emitted raw DEFLATE under the "zlib" label.
+    // Accept wrapped zlib too for pastes produced by other implementations.
+    try { return inflateRawSync(raw); }
+    catch (error) {
+      if (error.code !== 'Z_DATA_ERROR') throw error;
+      return inflateSync(raw);
+    }
   } catch (error) {
     if (error.code === 'ERR_OSSL_EVP_BAD_DECRYPT' || /authenticate data|bad decrypt/i.test(error.message)) return null;
     throw error;
   }
+}
+
+export function tryPassword(key, prepared, password) {
+  const phrase = Buffer.concat([key, Buffer.from(password, 'utf8')]);
+  const derived = pbkdf2Sync(phrase, prepared.salt, prepared.iterations, prepared.keyBits / 8, 'sha256');
+  return decryptWithDerivedKey(prepared, derived);
+}
+
+export async function tryPasswordAsync(key, prepared, password) {
+  const phrase = Buffer.concat([key, Buffer.from(password, 'utf8')]);
+  const derived = await deriveAsync(phrase, prepared.salt, prepared.iterations, prepared.keyBits / 8, 'sha256');
+  return decryptWithDerivedKey(prepared, derived);
 }

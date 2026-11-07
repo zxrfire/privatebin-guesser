@@ -2,7 +2,7 @@
 import { createReadStream } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
-import { parsePasteUrl, fetchPaste, preparePaste, tryPassword } from '../src/privatebin.js';
+import { parsePasteUrl, fetchPaste, preparePaste, tryPasswordAsync } from '../src/privatebin.js';
 import { ALNUM, PRINTABLE, combinations, charsetSize, maskCandidates, maskSize, parseMask, wordVariants } from '../src/candidates.js';
 
 function usage() {
@@ -16,6 +16,7 @@ Options:
   --mask PATTERN           Mask tokens: ?l lower, ?u upper, ?d digit, ?s symbol, ?a printable, ?? literal ?
   --max-length N           Maximum length for alnum/special modes (default 6, max 12)
   --max-candidates N       Per generated stage limit (default 10000)
+  --workers N              Parallel crypto jobs (default 2, max 4)
   --paste-file FILE        Use saved encrypted paste instead of fetching
   --save FILE              Save encrypted response; refuses to overwrite
 
@@ -35,7 +36,7 @@ function argumentsFrom(argv) {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--help' || arg === '-h') return { help: true };
-    if (!['--url', '--wordlist', '--mode', '--mask', '--max-length', '--max-candidates', '--paste-file', '--save'].includes(arg) || !argv[i + 1]) throw new Error(`Invalid argument: ${arg}`);
+    if (!['--url', '--wordlist', '--mode', '--mask', '--max-length', '--max-candidates', '--workers', '--paste-file', '--save'].includes(arg) || !argv[i + 1]) throw new Error(`Invalid argument: ${arg}`);
     if (args[arg.slice(2)] !== undefined) throw new Error(`Repeated option: ${arg}`);
     args[arg.slice(2)] = argv[++i];
   }
@@ -48,12 +49,15 @@ function argumentsFrom(argv) {
   if (args.save && args['paste-file']) throw new Error('--save cannot be used with --paste-file.');
   args.maxLength = positiveInteger(args['max-length'] ?? '6', '--max-length', 12);
   args.maxCandidates = positiveInteger(args['max-candidates'] ?? '10000', '--max-candidates', 1_000_000_000);
+  args.workers = positiveInteger(args.workers ?? '2', '--workers', 4);
   return args;
 }
 
 async function* words(file) {
-  const lines = createInterface({ input: createReadStream(file), crlfDelay: Infinity });
-  try { for await (const word of lines) yield word; } finally { lines.close(); }
+  const input = createReadStream(file);
+  const lines = createInterface({ input, crlfDelay: Infinity });
+  try { for await (const word of lines) yield word; }
+  finally { lines.close(); input.destroy(); }
 }
 
 async function* variants(file) {
@@ -79,24 +83,36 @@ async function main() {
     console.error(`${name}: ${keyspace === undefined ? 'streaming candidates' : `${keyspace} possible candidates`}${limit === Infinity ? '' : `; trying at most ${limit}`}.`);
     let count = 0;
     const stageStarted = performance.now();
-    for await (const password of candidates) {
-      if (count >= limit) break;
-      count++;
-      total++;
-      const plaintext = tryPassword(key, prepared, password);
-      if (plaintext !== null) {
-        console.log(`Password found: ${password}`);
-        console.log(`Stage: ${name}. Tested ${total} candidate(s) in ${((performance.now() - started) / 1000).toFixed(2)} s.`);
-        return true;
+    let nextProgress = 1000;
+    const iterator = candidates[Symbol.asyncIterator]?.() ?? candidates[Symbol.iterator]();
+    try {
+      while (count < limit) {
+        const batch = [];
+        while (batch.length < args.workers && count + batch.length < limit) {
+          const next = await iterator.next();
+          if (next.done) break;
+          batch.push(next.value);
+        }
+        if (!batch.length) break;
+        const results = await Promise.all(batch.map(password => tryPasswordAsync(key, prepared, password)));
+        count += batch.length;
+        total += batch.length;
+        const winner = results.findIndex(result => result !== null);
+        if (winner >= 0) {
+          console.log(`Password found: ${batch[winner]}`);
+          console.log(`Stage: ${name}. Tested ${total} candidate(s) in ${((performance.now() - started) / 1000).toFixed(2)} s.`);
+          return true;
+        }
+        if (count >= nextProgress) {
+          const seconds = (performance.now() - stageStarted) / 1000;
+          const rate = count / seconds;
+          const target = keyspace === undefined ? limit : Math.min(limit, Number(keyspace));
+          const eta = Number.isFinite(target) ? `; about ${((target - count) / rate).toFixed(0)} s to stage limit` : '';
+          console.error(`${name}: tested ${count} candidate(s); ${rate.toFixed(1)}/s${eta}.`);
+          nextProgress += 1000;
+        }
       }
-      if (count % 1000 === 0) {
-        const seconds = (performance.now() - stageStarted) / 1000;
-        const rate = count / seconds;
-        const target = keyspace === undefined ? limit : Math.min(limit, Number(keyspace));
-        const eta = Number.isFinite(target) ? `; about ${((target - count) / rate).toFixed(0)} s to stage limit` : '';
-        console.error(`${name}: tested ${count} candidate(s); ${rate.toFixed(1)}/s${eta}.`);
-      }
-    }
+    } finally { await iterator.return?.(); }
     const truncated = count >= limit && (keyspace === undefined || BigInt(count) < keyspace);
     console.error(`${name}: tested ${count} candidate(s)${truncated ? ' (stage limit reached)' : ''}.`);
     return false;
