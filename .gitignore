@@ -1,0 +1,5 @@
+node_modules/
+*.paste.json
+!test/fixtures/*.paste.json
+*.wordlist
+*.txt
