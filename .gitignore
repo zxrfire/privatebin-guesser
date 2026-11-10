@@ -6,4 +6,5 @@ gpu-*.log
 !test/fixtures/*.paste.json
 *.wordlist
 *.txt
+!gpu/requirements.txt
 bench/*-results.jsonl
