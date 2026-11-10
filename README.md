@@ -28,7 +28,24 @@ You can also choose one stage with `--mode rules`, `--mode alnum`, or `--mode sp
 node bin/privatebin-guesser.js --url 'https://privatebin.example/?0123456789abcdef#YOUR_KEY' --mask '?u?l?l?l?d?d' --max-candidates 10000
 ```
 
-Mask tokens are `?l` (lowercase), `?u` (uppercase), `?d` (digit), `?s` (symbol, including space), `?a` (all printable ASCII), and `??` (literal question mark). The mask above searches one uppercase letter, three lowercase letters, and two digits. These modes follow the same broad progression documented by [John the Ripper](https://www.openwall.com/john/doc/MODES.shtml) and [hashcat](https://hashcat.net/wiki/doku.php?id=mask_attack); this project implements a small, CPU-based subset.
+Mask tokens are `?l` (lowercase), `?u` (uppercase), `?d` (digit), `?s` (symbol, including space), `?a` (all printable ASCII), and `??` (literal question mark). The mask above searches one uppercase letter, three lowercase letters, and two digits. These modes follow the same broad progression documented by [John the Ripper](https://www.openwall.com/john/doc/MODES.shtml) and [hashcat](https://hashcat.net/wiki/doku.php?id=mask_attack).
+
+## Optional NVIDIA GPU backend
+
+Create a Python virtual environment inside this repository and install the optional GPU packages into it:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r gpu\requirements.txt
+```
+
+On Linux, use `.venv/bin/python` for the second command. This leaves the system Python environment untouched. The venv is ignored by Git. The GPU backend needs an NVIDIA GPU and a compatible driver; the CPU backend needs no Python packages.
+
+```powershell
+node bin/privatebin-guesser.js --url 'https://privatebin.example/?0123456789abcdef#YOUR_KEY' --paste-file 'C:\path\to\saved.paste.json' --wordlist 'C:\path\to\words.txt' --backend gpu
+```
+
+The default GPU batch contains 1024 candidates. Use `--gpu-batch-size 128` if a batch runs too long on a display GPU. The GPU derives PBKDF2 keys; the CLI checks each derived key against the paste's AES-GCM tag. Unicode candidates and candidates longer than 224 UTF-8 bytes are checked on the CPU for correctness. `--workers` applies to the CPU backend only. To use a different venv, set `PRIVATEBIN_GPU_PYTHON` to its Python executable. An explicit GPU request reports an error if the venv or GPU is unavailable.
 
 On Windows PowerShell, keep the URL in quotes so the `#` fragment is passed intact. A match prints the password and the number of candidates tested. Exit code `0` means a match, `2` means no match, and `1` means an input or network error. The paste's contents are not printed.
 
@@ -53,6 +70,7 @@ Apache License 2.0. You may use, modify, and redistribute the project under its 
 
 ```powershell
 npm test
+npm run test:gpu
 ```
 
 The acceptance tests use encrypted paste data downloaded from two sample URLs supplied by the project owner. One confirms a wrong candidate fails; the other finds the known password `test`. Both read checked-in fixtures without making a network request, so they still work after the originals expire.

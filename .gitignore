@@ -1,4 +1,7 @@
 node_modules/
+.venv/
+gpu-install*.log
+gpu-*.log
 *.paste.json
 !test/fixtures/*.paste.json
 *.wordlist

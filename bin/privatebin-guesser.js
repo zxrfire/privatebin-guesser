@@ -3,6 +3,7 @@ import { createReadStream } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import { parsePasteUrl, fetchPaste, preparePaste, tryPasswordAsync } from '../src/privatebin.js';
+import { GpuBackend } from '../src/gpu.js';
 import { ALNUM, PRINTABLE, combinations, charsetSize, maskCandidates, maskSize, parseMask, wordVariants } from '../src/candidates.js';
 
 function usage() {
@@ -17,6 +18,8 @@ Options:
   --max-length N           Maximum length for alnum/special modes (default 6, max 12)
   --max-candidates N       Per generated stage limit (default 10000)
   --workers N              Parallel crypto jobs (default 2, max 4)
+  --backend cpu|gpu         Derive keys on CPU (default) or GPU
+  --gpu-batch-size N        GPU candidates per batch (default 1024, max 8192)
   --paste-file FILE        Use saved encrypted paste instead of fetching
   --save FILE              Save encrypted response; refuses to overwrite
 
@@ -36,7 +39,7 @@ function argumentsFrom(argv) {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--help' || arg === '-h') return { help: true };
-    if (!['--url', '--wordlist', '--mode', '--mask', '--max-length', '--max-candidates', '--workers', '--paste-file', '--save'].includes(arg) || !argv[i + 1]) throw new Error(`Invalid argument: ${arg}`);
+    if (!['--url', '--wordlist', '--mode', '--mask', '--max-length', '--max-candidates', '--workers', '--backend', '--gpu-batch-size', '--paste-file', '--save'].includes(arg) || !argv[i + 1]) throw new Error(`Invalid argument: ${arg}`);
     if (args[arg.slice(2)] !== undefined) throw new Error(`Repeated option: ${arg}`);
     args[arg.slice(2)] = argv[++i];
   }
@@ -50,6 +53,11 @@ function argumentsFrom(argv) {
   args.maxLength = positiveInteger(args['max-length'] ?? '6', '--max-length', 12);
   args.maxCandidates = positiveInteger(args['max-candidates'] ?? '10000', '--max-candidates', 1_000_000_000);
   args.workers = positiveInteger(args.workers ?? '2', '--workers', 4);
+  args.backend ??= 'cpu';
+  if (!['cpu', 'gpu'].includes(args.backend)) throw new Error('--backend must be cpu or gpu.');
+  args.gpuBatchSize = positiveInteger(args['gpu-batch-size'] ?? '1024', '--gpu-batch-size', 8192);
+  if (args.backend === 'gpu' && args.workers !== 2) throw new Error('--workers applies only to the CPU backend.');
+  if (args.backend === 'cpu' && args['gpu-batch-size']) throw new Error('--gpu-batch-size requires --backend gpu.');
   return args;
 }
 
@@ -72,6 +80,8 @@ async function main() {
   const { fetchUrl, key } = parsePasteUrl(args.url);
   const paste = args['paste-file'] ? JSON.parse(await readFile(args['paste-file'], 'utf8')) : await fetchPaste(fetchUrl);
   const prepared = preparePaste(paste);
+  const gpu = args.backend === 'gpu' ? await new GpuBackend(key, prepared).start() : null;
+  try {
   if (args.save) {
     await writeFile(args.save, `${JSON.stringify(paste)}\n`, { flag: 'wx', mode: 0o600 });
     console.error(`Encrypted paste saved to ${args.save}`);
@@ -88,13 +98,13 @@ async function main() {
     try {
       while (count < limit) {
         const batch = [];
-        while (batch.length < args.workers && count + batch.length < limit) {
+        while (batch.length < (gpu ? args.gpuBatchSize : args.workers) && count + batch.length < limit) {
           const next = await iterator.next();
           if (next.done) break;
           batch.push(next.value);
         }
         if (!batch.length) break;
-        const results = await Promise.all(batch.map(password => tryPasswordAsync(key, prepared, password)));
+        const results = gpu ? await gpu.tryBatch(batch) : await Promise.all(batch.map(password => tryPasswordAsync(key, prepared, password)));
         count += batch.length;
         total += batch.length;
         const winner = results.findIndex(result => result !== null);
@@ -128,6 +138,7 @@ async function main() {
   }
   console.log(`No match among ${total} candidate(s) in ${((performance.now() - started) / 1000).toFixed(2)} s.`);
   process.exitCode = 2;
+  } finally { gpu?.close(); }
 }
 
 main().catch(error => { console.error(`Error: ${error.message}`); process.exitCode = 1; });

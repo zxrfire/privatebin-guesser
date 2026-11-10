@@ -79,7 +79,7 @@ export async function fetchPaste(fetchUrl) {
   return paste;
 }
 
-function decryptWithDerivedKey(prepared, derived) {
+export function tryDerivedKey(prepared, derived) {
   try {
     const decipher = createDecipheriv(`aes-${prepared.keyBits}-gcm`, derived, prepared.iv, { authTagLength: prepared.tagBytes });
     decipher.setAAD(prepared.aad);
@@ -102,11 +102,11 @@ function decryptWithDerivedKey(prepared, derived) {
 export function tryPassword(key, prepared, password) {
   const phrase = Buffer.concat([key, Buffer.from(password, 'utf8')]);
   const derived = pbkdf2Sync(phrase, prepared.salt, prepared.iterations, prepared.keyBits / 8, 'sha256');
-  return decryptWithDerivedKey(prepared, derived);
+  return tryDerivedKey(prepared, derived);
 }
 
 export async function tryPasswordAsync(key, prepared, password) {
   const phrase = Buffer.concat([key, Buffer.from(password, 'utf8')]);
   const derived = await deriveAsync(phrase, prepared.salt, prepared.iterations, prepared.keyBits / 8, 'sha256');
-  return decryptWithDerivedKey(prepared, derived);
+  return tryDerivedKey(prepared, derived);
 }
