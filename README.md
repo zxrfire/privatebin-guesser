@@ -71,6 +71,9 @@ Apache License 2.0. You may use, modify, and redistribute the project under its 
 ```powershell
 npm test
 npm run test:gpu
+npm run test:gpu:full
 ```
 
 The acceptance tests use encrypted paste data downloaded from two sample URLs supplied by the project owner. One confirms a wrong candidate fails; the other finds the known password `test`. Both read checked-in fixtures without making a network request, so they still work after the originals expire.
+
+The optional `test:gpu:full` acceptance test starts with no wordlist and exhaustively tries four-letter lowercase passwords until it finds `test`. It checks the result and allows 260 seconds, about twice the measured 128-second RTX 5090 run. Run it separately; its timing limit is specific to this machine.

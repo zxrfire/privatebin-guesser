@@ -18,3 +18,5 @@ The scripts in this directory reproduce the crypto measurements. `python.py` add
 ## GPU backend check
 
 On the same machine, the RTX 5090 GPU backend checked 1,000 wrong ASCII wordlist entries from the saved paste in 1.44 s (about 694/s), using batches of 256. The two-worker CPU CLI took 5.25 s (about 190/s) on the same entries. These timings include CLI and GPU worker startup. The optional GPU packages were installed in the repository's `.venv`, leaving system Python untouched. This is one bounded local run; rates depend on batch size, paste iteration count, and other work on the machine.
+
+An exhaustive four-letter lowercase GPU search with batches of 1024 found `test` in the saved paste after 337,920 checked candidates in 127.89 s (about 2,642/s). The standalone acceptance test repeated that search successfully in 126.07 s. Its 260-second limit is roughly twice the measured time and applies only to this machine's RTX 5090.

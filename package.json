@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "bin": { "privatebin-guesser": "./bin/privatebin-guesser.js" },
-  "scripts": { "test": "node --test test/privatebin.test.js test/downloaded-paste.test.js test/candidates.test.js test/attack-modes.test.js", "test:gpu": "node --test test/gpu.test.js" },
+  "scripts": { "test": "node --test test/privatebin.test.js test/downloaded-paste.test.js test/candidates.test.js test/attack-modes.test.js", "test:gpu": "node --test test/gpu.test.js", "test:gpu:full": "node --test test/gpu-full.test.js" },
   "engines": { "node": ">=20" },
   "license": "Apache-2.0"
 }
